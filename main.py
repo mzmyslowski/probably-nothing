@@ -23,8 +23,13 @@ def handle_event(event, tx):
     abi = json.loads(requests.get(abi_endpoint).text)
     if abi['message'] == 'OK':
         contract = web3.eth.contract(address=tx["to"], abi=abi["result"])
-        func_obj, func_params = contract.decode_function_input(tx["input"])
-        print('Name of the called function:', func_obj.fn_name)
+        try:
+            func_obj, func_params = contract.decode_function_input(tx["input"])
+            print('Name of the called function:', func_obj.fn_name)
+            if 'mint' in func_obj.fn_name.lower():
+                raise NotImplementedError
+        except ValueError as e:
+            print(e)
 
 
 async def log_loop(event_filter, getTransaction, poll_interval):
