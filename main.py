@@ -39,12 +39,17 @@ def handle_event(event, tx):
 
 
 async def log_loop(event_filter, getTransaction, poll_interval):
+    block_number = None
     while True:
         print('---------------------------------------------------')
-        for event in event_filter.get_all_entries():
-            if event['address'] in nfts_addresses:
-                tx = getTransaction(event['transactionHash'])
-                handle_event(event, tx)
+        events = event_filter.get_all_entries()
+        if block_number != events[0]['blockNumber']:
+            block_number = events[0]['blockNumber']
+            print('Block number', block_number)
+            for event in event_filter.get_all_entries():
+                if event['address'] in nfts_addresses:
+                    tx = getTransaction(event['transactionHash'])
+                    handle_event(event, tx)
         await asyncio.sleep(poll_interval)
 
 
@@ -55,7 +60,7 @@ def main():
     try:
         loop.run_until_complete(
             asyncio.gather(
-                log_loop(event_filter, tx_callback, 0.1)))
+                log_loop(event_filter, tx_callback, 2)))
     finally:
         loop.close()
 
