@@ -3,7 +3,6 @@ import json
 import os
 
 from dotenv import load_dotenv
-import requests
 from web3 import Web3
 
 load_dotenv()
@@ -19,24 +18,20 @@ TRANSFER_SIGNATURE_HASH = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f
 
 
 def handle_event(event, tx):
-    abi_endpoint = ETHERSCAN_ABI_URL.format(tx['to'], ETHERSCAN_API_KEY)
-    abi = json.loads(requests.get(abi_endpoint).text)
-    if abi['message'] == 'OK':
-        contract = web3.eth.contract(address=tx["to"], abi=abi["result"])
-        try:
-            func_obj, func_params = contract.decode_function_input(tx["input"])
-            print('Name of the called function:', func_obj.fn_name)
-            if 'mint' in func_obj.fn_name.lower():
-                raise NotImplementedError
-        except ValueError as e:
-            print(e)
+    abi = ABIs[event['address']]
+    try:
+        contract = web3.eth.contract(address=tx["to"], abi=abi)
+        func_obj, func_params = contract.decode_function_input(tx["input"])
+        print(f'Address {tx["from"]} called {func_obj.fn_name} on {event["address"]}')
+    except ValueError as e:
+        print(e)
 
 
 async def log_loop(event_filter, getTransaction, poll_interval):
     while True:
         print('---------------------------------------------------')
         for event in event_filter.get_all_entries():
-            if Web3.toJSON(event['topics'][0])[1:-1] == TRANSFER_SIGNATURE_HASH:
+            if event['address'] in nfts_addresses:
                 tx = getTransaction(event['transactionHash'])
                 handle_event(event, tx)
         await asyncio.sleep(poll_interval)
@@ -49,11 +44,19 @@ def main():
     try:
         loop.run_until_complete(
             asyncio.gather(
-                log_loop(event_filter, tx_callback, 2)))
+                log_loop(event_filter, tx_callback, 0.1)))
     finally:
         loop.close()
 
 
 if __name__ == "__main__":
+    with open('nfts.json', 'r') as f:
+        nfts = json.load(f)
+    ABIs = {}
+    abis_names = [name for name in os.listdir('ABIs') if 'json' in name]
+    for abi in abis_names:
+        with open(f'ABIs/{abi}', 'r') as f:
+            ABIs[abi[:-5]] = json.load(f)
+    nfts_addresses = nfts.values()
     web3 = Web3(Web3.HTTPProvider(INFURA_API_URL))
     main()
