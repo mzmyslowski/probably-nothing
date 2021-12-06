@@ -3,6 +3,7 @@ import json
 import os
 
 from dotenv import load_dotenv
+import requests
 from web3 import Web3
 
 load_dotenv()
@@ -17,8 +18,18 @@ INFURA_API_URL = f'https://mainnet.infura.io/v3/{INFURA_API_KEY}'
 TRANSFER_SIGNATURE_HASH = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 
 
+def get_abi(address):
+    a = json.loads(requests.get(ETHERSCAN_ABI_URL.format(address, ETHERSCAN_API_KEY)).text)
+    result = a['result']
+    with open(f'ABIs/{address}.json', 'w') as f:
+        json.dump(result, f)
+    ABIs[address] = result
+
+
 def handle_event(event, tx):
-    abi = ABIs[event['address']]
+    if ABIs.get(tx['to']) is None:
+        get_abi(address=tx['to'])
+    abi = ABIs[tx['to']]
     try:
         contract = web3.eth.contract(address=tx["to"], abi=abi)
         func_obj, func_params = contract.decode_function_input(tx["input"])
