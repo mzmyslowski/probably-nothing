@@ -126,14 +126,14 @@ class EtherscanNFTScanner(NFTScanner):
             for address in self.wallets_filter:
                 resp = requests.get(
                     self.GET_TRANSACTIONS_URL.format(
-                        address=address.lower(),
+                        address=address,
                         startblock=block_number,
                         apikey=self.etherscan_api_key
                     )
                 ).text
                 txs = json.loads(resp)['result']
                 for tx in txs:
-                    contract_address = tx['to']
+                    contract_address = Web3.toChecksumAddress(tx['to'])
                     try:
                         func_obj, func_params = self._decode_func(contract_address=contract_address, input=tx['input'])
                         print(f'Address {tx["from"]} called {func_obj.fn_name} on {contract_address}')
@@ -151,11 +151,12 @@ def main():
         with open(f'ABIs/{abi}', 'r') as f:
             ABIs[abi[:-5]] = json.load(f)
     nfts = nfts.values()
-    nft_scanner = BlockNFTScanner(
+    nft_scanner = EtherscanNFTScanner(
         nfts=nfts,
         abis=ABIs,
         web3_api_url=INFURA_API_URL.format(INFURA_API_KEY),
         etherscan_api_key=ETHERSCAN_API_KEY,
+        wallets_filter=['0x7Be8076f4EA4A4AD08075C2508e481d6C946D12b']
     )
     nft_scanner.start()
 
