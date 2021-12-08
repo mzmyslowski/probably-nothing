@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 
 from dotenv import load_dotenv
 import requests
@@ -19,11 +20,12 @@ class NFTScanner:
     TRANSFER_SIGNATURE_HASH = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
     ABI_PATH = './ABIs'
 
-    def __init__(self, nfts, abis, web3_api_url, etherscan_api_key):
+    def __init__(self, nfts, abis, web3_api_url, etherscan_api_key, wallets_filter=None):
         self.nfts = nfts
         self.abis = abis
         self.web3 = Web3(Web3.HTTPProvider(web3_api_url))
         self.etherscan_api_key = etherscan_api_key
+        self.wallets_filter = wallets_filter
 
     def start(self):
         pass
@@ -32,6 +34,17 @@ class NFTScanner:
         path = os.path.join(self.ABI_PATH, f'{address}.json')
         with open(path, 'w') as f:
             json.dump(abi, f)
+
+    def _decode_func(self, contract_address, input):
+        if self.abis.get(contract_address) is None:
+            abi = self.get_abi(address=contract_address, etherscan_api_key=self.etherscan_api_key)
+            self.abis[contract_address] = abi
+            self._save_abi(address=contract_address, abi=abi)
+        else:
+            abi = self.abis[contract_address]
+        contract = self.web3.eth.contract(address=contract_address, abi=abi)
+        func_obj, func_params = contract.decode_function_input(input)
+        return func_obj, func_params
 
     @staticmethod
     def get_abi(address, etherscan_api_key):
@@ -64,23 +77,70 @@ class BlockNFTScanner(NFTScanner):
                 for event in event_filter.get_all_entries():
                     if event['address'] in self.nfts:
                         tx = getTransaction(event['transactionHash'])
-                        self._handle_event(event, tx)
+                        contract_address = tx['to']
+                        try:
+                            func_obj, func_params = self._decode_func(contract_address=contract_address, input=tx['input'])
+                            print(f'Address {tx["from"]} called {func_obj.fn_name} on {contract_address}')
+                        except ValueError as e:
+                            print(e)
             await asyncio.sleep(poll_interval)
 
-    def _handle_event(self, event, tx):
-        contract_address = tx['to']
-        if self.abis.get(contract_address) is None:
-            abi = self.get_abi(address=contract_address, etherscan_api_key=self.etherscan_api_key)
-            self.abis[contract_address] = abi
-            self._save_abi(address=contract_address, abi=abi)
-        else:
-            abi = self.abis[contract_address]
+
+class EtherscanNFTScanner(NFTScanner):
+    GET_TRANSACTIONS_URL = (
+        'https://api.etherscan.io/api'
+        '?module=account'
+        '&action=txlist'
+        '&address={address}'
+        '&startblock={startblock}'
+        '&endblock=99999999'
+        '&page=1'
+        '&offset=10'
+        '&sort=asc'
+        '&apikey={apikey}'
+    )
+    GET_BLOCK_AT_TIMESTAMP_URL = (
+        'https://api.etherscan.io/api'
+        '?module=block'
+        '&action=getblocknobytime'
+        '&timestamp={timestsamp}'
+        '&closest=before'
+        '&apikey={apikey}'
+    )
+
+    def start(self):
+        loop = asyncio.get_event_loop()
         try:
-            contract = self.web3.eth.contract(address=contract_address, abi=abi)
-            func_obj, func_params = contract.decode_function_input(tx["input"])
-            print(f'Address {tx["from"]} called {func_obj.fn_name} on {event["address"]}')
-        except ValueError as e:
-            print(e)
+            loop.run_until_complete(
+                asyncio.gather(
+                    self._log_loop(2)))
+        finally:
+            loop.close()
+
+    async def _log_loop(self, poll_interval):
+        while True:
+            print('---------------------------------------------------')
+            block_number = json.loads(requests.get(
+                self.GET_BLOCK_AT_TIMESTAMP_URL.format(timestsamp=int(time.time()), apikey=self.etherscan_api_key)
+            ).text)['result']
+            for address in self.wallets_filter:
+                resp = requests.get(
+                    self.GET_TRANSACTIONS_URL.format(
+                        address=address.lower(),
+                        startblock=block_number,
+                        apikey=self.etherscan_api_key
+                    )
+                ).text
+                txs = json.loads(resp)['result']
+                for tx in txs:
+                    contract_address = tx['to']
+                    try:
+                        func_obj, func_params = self._decode_func(contract_address=contract_address, input=tx['input'])
+                        print(f'Address {tx["from"]} called {func_obj.fn_name} on {contract_address}')
+                    except ValueError as e:
+                        print(e)
+            await asyncio.sleep(poll_interval)
+
 
 def main():
     with open('nfts.json', 'r') as f:
@@ -95,7 +155,7 @@ def main():
         nfts=nfts,
         abis=ABIs,
         web3_api_url=INFURA_API_URL.format(INFURA_API_KEY),
-        etherscan_api_key=ETHERSCAN_API_KEY
+        etherscan_api_key=ETHERSCAN_API_KEY,
     )
     nft_scanner.start()
 
