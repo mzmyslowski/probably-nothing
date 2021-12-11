@@ -6,7 +6,7 @@ import time
 from dotenv import load_dotenv
 import requests
 from web3 import Web3
-from web3.exceptions import ABIFunctionNotFound
+from web3.exceptions import ABIFunctionNotFound, TransactionNotFound
 
 load_dotenv()
 
@@ -20,8 +20,8 @@ INFURA_API_URL = f'https://mainnet.infura.io/v3/{INFURA_API_KEY}'
 class NFTScanner:
     TRANSFER_SIGNATURE_HASH = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
     ROUTER_ADDRESSES = {
-        'uniswap_v2': '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D',
-        'uniswap_v3': '0xe592427a0aece92de3edee1f18e0157c05861564'
+        '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D': 'uniswap_v2',
+        '0xe592427a0aece92de3edee1f18e0157c05861564': 'uniswap_v3'
     }
     ABI_PATH = './ABIs'
 
@@ -56,6 +56,27 @@ class NFTScanner:
         contract = self.web3.eth.contract(address=contract_address, abi=abi)
         return contract
 
+    def _handle_event(self, tx, contract_address):
+        func_obj, func_params = self._decode_func(
+            contract_address=contract_address,
+            input=tx['input']
+        )
+        tx_hash = tx_hash = Web3.toJSON(tx['hash']).strip('"')
+        if 'mint' in func_obj.fn_name:
+            print(f'Address {tx["from"]} called {func_obj.fn_name} on {contract_address} in tx {tx_hash}')
+        elif 'swap' in func_obj.fn_name and self.ROUTER_ADDRESSES.get(tx['to']) is not None:
+            path = func_params['path']
+            token_in = path[0]
+            token_out = path[-1]
+
+            # token_in_contract = self._get_contract(contract_address=token_in)
+            # token_out_contract = self._get_contract(contract_address=token_out)
+            # print(f'Address {tx["from"]} swaped {token_in_contract.functions.symbol().call()} for {token_out_contract.functions.symbol().call()} in tx {tx_hash}')
+            print(
+                f'Address {tx["from"]} swaped {self.tokens.get(token_in) or token_in} for {self.tokens.get(token_out) or token_out} in tx {tx_hash}')
+        else:
+            print(f'Handling of {func_obj.fn_name} wasn\'t implemented (tx {tx_hash}).')
+
     @staticmethod
     def get_abi(address, etherscan_api_key):
         etherscan_abi_url = 'https://api.etherscan.io/api?module=contract&action=getabi&address={}&apikey={}'
@@ -72,7 +93,7 @@ class BlockNFTScanner(NFTScanner):
         try:
             loop.run_until_complete(
                 asyncio.gather(
-                    self._log_loop(event_filter, tx_callback, 2)))
+                    self._log_loop(event_filter, tx_callback, 0.5)))
         finally:
             loop.close()
 
@@ -82,43 +103,38 @@ class BlockNFTScanner(NFTScanner):
             print('---------------------------------------------------')
             txs_already_spotted = []
             events = event_filter.get_all_entries()
-            new_block_number = events[0]['blockNumber']
-            if block_number != new_block_number:
-                block_number = new_block_number
-                print('Block number', block_number)
-                for event in events:
-                    if (
-                            event['transactionHash'] not in txs_already_spotted and
-                            Web3.toJSON(event['topics'][0])[1:-1] == self.TRANSFER_SIGNATURE_HASH
-                    ):
-                        txs_already_spotted.append(event['transactionHash'])
-                        tx = getTransaction(event['transactionHash'])
-                        contract_address = tx['to']
-                        if tx['to'] in self.ROUTER_ADDRESSES.values() or tx['to'] in self.nfts.values():
-                            try:
-                                func_obj, func_params = self._decode_func(
-                                    contract_address=contract_address,
-                                    input=tx['input']
-                                )
-                                tx_hash = Web3.toJSON(tx['hash']).strip('"')
-                                if 'mint' in func_obj.fn_name:
-                                    print(f'Address {tx["from"]} called {func_obj.fn_name} on {contract_address} in tx {tx_hash}')
-                                if 'swap' in func_obj.fn_name and tx['to'] in self.ROUTER_ADDRESSES.values():
-                                    path = func_params['path']
-                                    token_in = path[0]
-                                    token_out = path[-1]
-                                    if self.tokens.get(token_in) is not None and self.tokens.get(token_out) is not None:
-                                        print(f'Address {tx["from"]} swaped {self.tokens.get(token_in)} for {self.tokens.get(token_out)} in tx {tx_hash}')
-                                    else:
-                                        # token_in_contract = self._get_contract(contract_address=token_in)
-                                        # token_out_contract = self._get_contract(contract_address=token_out)
-                                        # print(f'Address {tx["from"]} swaped {token_in_contract.functions.symbol().call()} for {token_out_contract.functions.symbol().call()} in tx {tx_hash}')
-                                        print(f'Address {tx["from"]} swaped {token_in} for {token_in} in tx {tx_hash}')
-                            except ValueError as e:
-                                print(e)
-                            except ABIFunctionNotFound as e:
-                                print(e)
-
+            if len(events) > 0:
+                new_block_number = events[0]['blockNumber']
+                if block_number != new_block_number:
+                    start = time.time()
+                    transfer_events_count = 0
+                    known_events_count = 0
+                    block_number = new_block_number
+                    print('Block number', block_number)
+                    print('Number of txs', len(events))
+                    for event in events:
+                        try:
+                            if (
+                                    event['transactionHash'] not in txs_already_spotted and
+                                    Web3.toJSON(event['topics'][0])[1:-1] == self.TRANSFER_SIGNATURE_HASH
+                            ):
+                                transfer_events_count += 1
+                                txs_already_spotted.append(event['transactionHash'])
+                                tx = getTransaction(event['transactionHash'])
+                                contract_address = tx['to']
+                                if self.ROUTER_ADDRESSES.get(tx['to']) is not None or self.nfts.get(tx['to']) is not None:
+                                    known_events_count += 1
+                                    try:
+                                        self._handle_event(tx=tx, contract_address=contract_address)
+                                    except ValueError as e:
+                                        print(e)
+                                    except ABIFunctionNotFound as e:
+                                        print(e)
+                        except TransactionNotFound as e:
+                            print(e)
+                    print('Transfer events count', transfer_events_count, f'({transfer_events_count / len(events)}%)')
+                    print('Known events count', known_events_count, f'({known_events_count / len(events)}%)')
+                    print('Processing block time', time.time() - start)
             await asyncio.sleep(poll_interval)
 
 
@@ -147,9 +163,7 @@ class EtherscanNFTScanner(NFTScanner):
     def start(self):
         loop = asyncio.get_event_loop()
         try:
-            loop.run_until_complete(
-                asyncio.gather(
-                    self._log_loop(2)))
+            loop.run_until_complete(asyncio.gather(self._log_loop(2)))
         finally:
             loop.close()
 
@@ -171,8 +185,7 @@ class EtherscanNFTScanner(NFTScanner):
                 for tx in txs:
                     contract_address = Web3.toChecksumAddress(tx['to'])
                     try:
-                        func_obj, func_params = self._decode_func(contract_address=contract_address, input=tx['input'])
-                        print(f'Address {tx["from"]} called {func_obj.fn_name} on {contract_address}')
+                        self._handle_event(tx=tx, contract_address=contract_address)
                     except ValueError as e:
                         print(e)
             await asyncio.sleep(poll_interval)
